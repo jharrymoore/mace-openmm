@@ -20,7 +20,7 @@ from openmm.app import (
     PME,
 )
 from openmm.unit import nanometer, nanometers, molar, angstrom
-from openmm.unit import kelvin, picosecond, femtosecond, kilojoule_per_mole
+from openmm.unit import kelvin, picosecond, femtosecond, kilojoule_per_mole, picoseconds, femtoseconds
 from openff.toolkit.topology import Molecule
 
 from openmmforcefields.generators import SMIRNOFFTemplateGenerator
@@ -252,8 +252,8 @@ class MixedSystem:
         energy_2 = state.getPotentialEnergy().value_in_unit(kilojoule_per_mole)
         return energy_2
 
-    def run_replex_equilibrium_fep(self, replicas: int, restart: bool) -> None:
-
+    def run_replex_equilibrium_fep(self, replicas: int, restart: bool, steps: int) -> None:
+        del os.environ["SLURM_PROCID"]
         sampler = RepexConstructor(
             mixed_system=self.mixed_system,
             initial_positions=self.modeller.getPositions(),
@@ -261,6 +261,17 @@ class MixedSystem:
             temperature=self.temperature * kelvin,
             n_states=replicas,
             restart=restart,
+            mcmc_moves_kwargs={
+                "timestep": 1.0*femtoseconds,
+                "collision_rate": 1.0 / picoseconds,
+                "n_steps": 1000,
+                "reassign_velocities": True
+            },
+            replica_exchange_sampler_kwargs={
+                "number_of_iterations": steps,
+                "online_analysis_interval": 10,
+                "online_analysis_minimum_iterations": 10
+            },
             storage_kwargs={
                 "storage": self.repex_storage_path,
                 "checkpoint_interval": 100,

@@ -1,2 +1,4 @@
 tests/runs
-
+runs
+*.egg-info
+*.out

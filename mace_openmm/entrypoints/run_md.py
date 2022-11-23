@@ -96,7 +96,7 @@ def main():
     if args.run_type == "md":
         mixed_system.run_mixed_md(args.steps, args.interval, args.output_file)
     elif args.run_type == "repex":
-        mixed_system.run_replex_equilibrium_fep(args.replicas, args.restart)
+        mixed_system.run_replex_equilibrium_fep(args.replicas, args.restart, args.steps)
     elif args.run_type == "neq":
         mixed_system.run_neq_switching(args.steps, args.interval)
     else:
