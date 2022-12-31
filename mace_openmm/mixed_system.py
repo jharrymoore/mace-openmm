@@ -41,6 +41,7 @@ from openmmml import MLPotential
 
 from openmmtools.openmm_torch.repex import (
     MixedSystemConstructor,
+    # DecoupledSystemConstructor,
     RepexConstructor,
     get_atoms_from_resname,
 )
@@ -90,6 +91,7 @@ class MixedSystem:
         friction_coeff: float = 1.0,
         timestep: float = 1.0,
         pure_ml_system: bool = False,
+        create_decoupled_system: bool = False,
         smff: str = "1.0",
     ) -> None:
 
@@ -119,11 +121,12 @@ class MixedSystem:
 
         os.makedirs(self.output_dir, exist_ok=True)
 
-        self.mixed_system, self.modeller = self.create_mixed_system(
+        self.mixed_system, self.decoupled_system, self.modeller = self.create_mixed_system(
             file=file,
             ml_mol=ml_mol,
             model_path=model_path,
             pure_ml_system=pure_ml_system,
+            create_decoupled_system=create_decoupled_system
         )
 
     def initialize_mm_forcefield(
@@ -159,7 +162,8 @@ class MixedSystem:
         model_path: str,
         ml_mol: str,
         pure_ml_system: bool = False,
-    ) -> Tuple[System, Modeller]:
+        create_decoupled_system = False
+    ) -> Tuple[System, Optional[System], Modeller]:
         """Creates the mixed system from a purely mm system
 
         :param str file: input pdb file
@@ -167,6 +171,7 @@ class MixedSystem:
         :param str model_path: path to the mace model
         :return Tuple[System, Modeller]: return mixed system and the modeller for topology + position access by downstream methods
         """
+        decoupled_system = None
         # initialize the ase atoms for MACE
 
         atoms, molecule = self.initialize_ase_atoms(ml_mol)
@@ -251,9 +256,16 @@ class MixedSystem:
             with open(os.path.join(self.output_dir, "prepared_system.pdb"), "w") as f:
                 PDBFile.writeFile(modeller.topology, modeller.getPositions(), file=f)
 
-        return system, modeller
+            # optionally, add the alchemical customCVForce for the nonbonded interactions to run ABFE edges
+            # if create_decoupled_system:
+            #     decoupled_system = DecoupledSystemConstructor(system).decoupled_system
 
-    # def evaluate_single_poiint(self,)
+
+        return system, decoupled_system, modeller
+    
+
+
+    # def run_abfe
 
     def run_mixed_md(self, steps: int, interval: int, output_file: str) -> float:
         """Runs plain MD on the mixed system, writes a pdb trajectory
@@ -321,20 +333,6 @@ class MixedSystem:
             )
         )
 
-        # ligand_indices =get_atoms_from_resname(topology=self.modeller.topology, resname=self.resname)
-        # print(ligand_indices)
-
-        # for idx in range(int(steps / 100)):
-
-        #     simulation.step(100)
-        #     state = simulation.context.getState(getEnergy=True, getForces=True)
-        #     energy_2 = state.getPotentialEnergy().value_in_unit(kilojoule_per_mole)
-        #     with open(os.path.join(self.output_dir, f"forces_{idx}.xml"), 'w') as f:
-        #         forces = state.getForces()
-        #         for idx in ligand_indices:
-        #             f.write(str(forces[idx]))
-        #     print([state.getForces()[idx] for idx in ligand_indices])
-        # # return energy_2
         simulation.step(steps)
 
     def run_replex_equilibrium_fep(

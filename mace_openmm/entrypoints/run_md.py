@@ -79,6 +79,7 @@ def main():
         default="tests/test_openmm/MACE_SPICE_larger.model",
     )
     parser.add_argument("--pure_ml_system", action="store_true")
+    parser.add_argument("--create_decoupled_system", action="store_true")
     args = parser.parse_args()
 
     if args.dtype == "float32":
