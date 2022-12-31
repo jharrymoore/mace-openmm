@@ -7,7 +7,7 @@ import sys
 from ase import Atoms
 from openmm.openmm import System
 from typing import List, Tuple, Optional
-from openmm import LangevinMiddleIntegrator
+from openmm import LangevinMiddleIntegrator, Vec3
 from openmmtools.integrators import AlchemicalNonequilibriumLangevinIntegrator
 from openmm.app import (
     Simulation,
@@ -16,15 +16,27 @@ from openmm.app import (
     ForceField,
     PDBFile,
     HBonds,
+    AllBonds,
     Modeller,
     PME,
 )
+from openmm import XmlSerializer
 from openmm.unit import nanometer, nanometers, molar, angstrom
-from openmm.unit import kelvin, picosecond, femtosecond, kilojoule_per_mole, picoseconds, femtoseconds
+from openmm.unit import (
+    kelvin,
+    picosecond,
+    femtosecond,
+    kilojoule_per_mole,
+    picoseconds,
+    femtoseconds,
+)
 from openff.toolkit.topology import Molecule
 
 from openmmforcefields.generators import SMIRNOFFTemplateGenerator
-from mace.calculators.openmm import MacePotentialImplFactory
+
+# from mace.calculators.openmm import MacePotentialImplFactory
+from openmmml.models.mace_potential import MacePotentialImplFactory
+from openmmml.models.anipotential import ANIPotentialImplFactory
 from openmmml import MLPotential
 
 from openmmtools.openmm_torch.repex import (
@@ -50,11 +62,13 @@ def get_xyz_from_mol(mol):
 
 
 MLPotential.registerImplFactory("mace", MacePotentialImplFactory())
+MLPotential.registerImplFactory("ani2x", ANIPotentialImplFactory())
+
+
 # platform = Platform.getPlatformByName("CUDA")
 # platform.setPropertyDefaultValue("DeterministicForces", "true")
 
 logger = logging.getLogger("INFO")
-SM_FF = "openff_unconstrained-1.0.0.offxml"
 
 
 class MixedSystem:
@@ -70,12 +84,13 @@ class MixedSystem:
         nonbondedCutoff: float,
         potential: str,
         temperature: float,
-        repex_storage_path: str,
         dtype: torch.dtype,
         neighbour_list: str,
+        output_dir: str,
         friction_coeff: float = 1.0,
-        timestep: float = 1,
-        pure_ml_system: bool = False
+        timestep: float = 1.0,
+        pure_ml_system: bool = False,
+        smff: str = "1.0",
     ) -> None:
 
         self.forcefields = forcefields
@@ -87,22 +102,40 @@ class MixedSystem:
         self.temperature = temperature
         self.friction_coeff = friction_coeff / picosecond
         self.timestep = timestep * femtosecond
-        self.repex_storage_path = repex_storage_path
         self.dtype = dtype
+        self.output_dir = output_dir
         self.neighbour_list = neighbour_list
         self.openmm_precision = "Double" if dtype == torch.float64 else "Mixed"
         logger.debug(f"OpenMM will use {self.openmm_precision} precision")
 
+        if smff == "1.0":
+            self.SM_FF = "openff_unconstrained-1.0.0.offxml"
+            logger.info("Using openff-1.0 unconstrained forcefield")
+        elif smff == "2.0":
+            self.SM_FF = "openff_unconstrained-2.0.0.offxml"
+            logger.info("Using openff-2.0 unconstrained forcefield")
+        else:
+            raise ValueError(f"Small molecule forcefield {smff} not recognised")
+
+        os.makedirs(self.output_dir, exist_ok=True)
+
         self.mixed_system, self.modeller = self.create_mixed_system(
-            file=file, ml_mol=ml_mol, model_path=model_path, pure_ml_system=pure_ml_system
+            file=file,
+            ml_mol=ml_mol,
+            model_path=model_path,
+            pure_ml_system=pure_ml_system,
         )
 
-    def initialize_mm_forcefield(self, molecule: Optional[Molecule] = None) -> ForceField:
+    def initialize_mm_forcefield(
+        self, molecule: Optional[Molecule] = None
+    ) -> ForceField:
 
         forcefield = ForceField(*self.forcefields)
         if molecule is not None:
             # Ensure we use unconstrained force field
-            smirnoff = SMIRNOFFTemplateGenerator(molecules=molecule, forcefield=SM_FF)
+            smirnoff = SMIRNOFFTemplateGenerator(
+                molecules=molecule, forcefield=self.SM_FF
+            )
             forcefield.registerTemplateGenerator(smirnoff.generator)
         return forcefield
 
@@ -111,6 +144,7 @@ class MixedSystem:
         if os.path.isfile(ml_mol):
             molecule = Molecule.from_file(ml_mol)
         else:
+            # we cannot initialize from smiles, since the coordinates will be garbage..
             molecule = Molecule.from_smiles(ml_mol)
 
         _, tmpfile = mkstemp(suffix="xyz")
@@ -118,7 +152,6 @@ class MixedSystem:
         atoms = read(tmpfile)
         os.remove(tmpfile)
         return atoms, molecule
-
 
     def create_mixed_system(
         self,
@@ -135,13 +168,13 @@ class MixedSystem:
         :return Tuple[System, Modeller]: return mixed system and the modeller for topology + position access by downstream methods
         """
         # initialize the ase atoms for MACE
-        
+
         atoms, molecule = self.initialize_ase_atoms(ml_mol)
 
         # Handle a complex, passed as a pdb file
         if file.endswith(".pdb"):
             input_file = PDBFile(file)
-            topology= input_file.getTopology()
+            topology = input_file.getTopology()
 
             # if pure_ml_system specified, we just need to parse the input file
             # if not pure_ml_system:
@@ -150,7 +183,7 @@ class MixedSystem:
 
         # Handle a ligand, passed as an sdf, override the Molecule initialized from smiles
         elif file.endswith(".sdf"):
-            molecule = Molecule.from_file(file, allow_undefined_stereo=True)
+            molecule = Molecule.from_file(file)
             input_file = molecule
             topology = molecule.to_topology().to_openmm()
             # Hold positions in nanometers
@@ -158,17 +191,24 @@ class MixedSystem:
 
             print(f"Initialized topology with {positions.shape} positions")
 
-            modeller = Modeller(molecule.to_topology().to_openmm(), positions)
+            modeller = Modeller(topology, positions)
+
         if pure_ml_system:
             # we have the input_file, create the system directly from the mace potential
             # modeller = None
-            # atoms.set_cell([50,50,50])
+            # I happen to know that 20A is the default box size, we should automatically make sure Atoms and openMM agree on the size and position of the periodic box...
+            atoms.set_cell([50, 50, 50])
+            topology.setPeriodicBoxVectors([[5.0, 0, 0], [0, 5.0, 0], [0, 0, 5.0]])
             ml_potential = MLPotential("mace")
             ml_system = ml_potential.createSystem(
                 topology, atoms_obj=atoms, filename=model_path, dtype=self.dtype
             )
+            # logging.info(ml_system.getDefaultPeriodicBoxVectors())
+            logging.info(
+                "pure ml system pbc:", ml_system.usesPeriodicBoundaryConditions()
+            )
             return ml_system, modeller
-        
+
         # Handle the mixed systems with a classical forcefield
         else:
             forcefield = self.initialize_mm_forcefield(molecule=molecule)
@@ -180,7 +220,7 @@ class MixedSystem:
             )
 
             omm_box_vecs = modeller.topology.getPeriodicBoxVectors()
-
+            # print(omm_box_vecs)
             atoms.set_cell(
                 [
                     omm_box_vecs[0][0].value_in_unit(angstrom),
@@ -189,15 +229,15 @@ class MixedSystem:
                 ]
             )
 
-            mm_system = forcefield.createSystem(
+            system = forcefield.createSystem(
                 modeller.topology,
                 nonbondedMethod=PME,
                 nonbondedCutoff=self.nonbondedCutoff * nanometer,
-                constraints= None,
+                constraints=None,
             )
 
-            mixed_system = MixedSystemConstructor(
-                system=mm_system,
+            system = MixedSystemConstructor(
+                system=system,
                 topology=modeller.topology,
                 nnpify_resname=self.resname,
                 nnp_potential=self.potential,
@@ -207,7 +247,13 @@ class MixedSystem:
                 nl=self.neighbour_list,
             ).mixed_system
 
-        return mixed_system, modeller
+            # write the final prepared system to disk
+            with open(os.path.join(self.output_dir, "prepared_system.pdb"), "w") as f:
+                PDBFile.writeFile(modeller.topology, modeller.getPositions(), file=f)
+
+        return system, modeller
+
+    # def evaluate_single_poiint(self,)
 
     def run_mixed_md(self, steps: int, interval: int, output_file: str) -> float:
         """Runs plain MD on the mixed system, writes a pdb trajectory
@@ -226,9 +272,36 @@ class MixedSystem:
             platformProperties={"Precision": self.openmm_precision},
         )
         simulation.context.setPositions(self.modeller.getPositions())
+        # simulation.context.setVelocitiesToTemperature(self.temperature)
+        try:
+            logging.info("Minimising energy...")
+            # simulation.context.setParameter("lambda_interpolate", 0)
+            simulation.minimizeEnergy()
+        except:
+            logging.info("Falling back to MM minimisation...")
+            simulation.minimizeEnergy()
 
-        logging.info("Minimising energy")
-        simulation.minimizeEnergy()
+        minimised_state = simulation.context.getState(
+            getPositions=True, getVelocities=True, getForces=True
+        )
+        with open(os.path.join(self.output_dir, f"minimised_system.pdb"), "w") as f:
+            PDBFile.writeFile(
+                self.modeller.topology, minimised_state.getPositions(), file=f
+            )
+            # if something goes wrong minimising the hybrid system, fall back to minimising with the full MM hamiltonian
+
+        # for step in range(1000):
+        #     print(f"minimisation step {step}")
+        #     simulation.minimizeEnergy(maxIterations=1)
+        #     minimised_state = simulation.context.getState(getPositions=True, getVelocities=True, getForces=True)
+
+        #         # write the minimised structure
+        #     with open(os.path.join(self.output_dir, f"minimised_system_{step}.pdb"), 'w') as f:
+        #         PDBFile.writeFile(self.modeller.topology, minimised_state.getPositions(), file=f)
+
+        # dump velocities and forces to xml
+        # with open(os.path.join(self.output_dir, "minimised_system.xml"), 'w') as f:
+        #     f.write(XmlSerializer.serialize(minimised_state))
 
         reporter = StateDataReporter(
             file=sys.stdout,
@@ -242,18 +315,36 @@ class MixedSystem:
         simulation.reporters.append(reporter)
         simulation.reporters.append(
             PDBReporter(
-                file=output_file,
+                file=os.path.join(self.output_dir, output_file),
                 reportInterval=interval,
+                enforcePeriodicBox=False,
             )
         )
 
-        simulation.step(steps)
-        state = simulation.context.getState(getEnergy=True)
-        energy_2 = state.getPotentialEnergy().value_in_unit(kilojoule_per_mole)
-        return energy_2
+        # ligand_indices =get_atoms_from_resname(topology=self.modeller.topology, resname=self.resname)
+        # print(ligand_indices)
 
-    def run_replex_equilibrium_fep(self, replicas: int, restart: bool, steps: int) -> None:
-        del os.environ["SLURM_PROCID"]
+        # for idx in range(int(steps / 100)):
+
+        #     simulation.step(100)
+        #     state = simulation.context.getState(getEnergy=True, getForces=True)
+        #     energy_2 = state.getPotentialEnergy().value_in_unit(kilojoule_per_mole)
+        #     with open(os.path.join(self.output_dir, f"forces_{idx}.xml"), 'w') as f:
+        #         forces = state.getForces()
+        #         for idx in ligand_indices:
+        #             f.write(str(forces[idx]))
+        #     print([state.getForces()[idx] for idx in ligand_indices])
+        # # return energy_2
+        simulation.step(steps)
+
+    def run_replex_equilibrium_fep(
+        self, replicas: int, restart: bool, steps: int
+    ) -> None:
+
+        repex_file_exists = os.path.isfile(os.path.join(self.output_dir, "repex.nc"))
+        # even if restart has been set, disable if the checkpoint file was not found, enforce minimising the system
+        if not repex_file_exists:
+            restart = False
         sampler = RepexConstructor(
             mixed_system=self.mixed_system,
             initial_positions=self.modeller.getPositions(),
@@ -262,30 +353,32 @@ class MixedSystem:
             n_states=replicas,
             restart=restart,
             mcmc_moves_kwargs={
-                "timestep": 1.0*femtoseconds,
+                "timestep": 1.0 * femtoseconds,
                 "collision_rate": 1.0 / picoseconds,
                 "n_steps": 1000,
-                "reassign_velocities": True
+                "reassign_velocities": True,
             },
             replica_exchange_sampler_kwargs={
                 "number_of_iterations": steps,
                 "online_analysis_interval": 10,
-                "online_analysis_minimum_iterations": 10
+                "online_analysis_minimum_iterations": 10,
             },
             storage_kwargs={
-                "storage": self.repex_storage_path,
+                "storage": os.path.join(self.output_dir, "repex.nc"),
                 "checkpoint_interval": 100,
                 "analysis_particle_indices": get_atoms_from_resname(
                     topology=self.modeller.topology, resname=self.resname
                 ),
             },
         ).sampler
+        # do not minimsie if we are hot-starting the simulation from a checkpoint
         if not restart:
             logging.info("Minimizing system...")
             t1 = time.time()
             sampler.minimize()
 
             logging.info(f"Minimised system  in {time.time() - t1} seconds")
+            # we want to write out the positions after the minimisation - possibly something weird is going wrong here and it's ending up in a weird conformation
 
         sampler.run()
 
@@ -309,7 +402,7 @@ class MixedSystem:
             self.modeller.topology,
             self.mixed_system,
             integrator,
-            platformProperties={"Precision": "Mixed"},
+            platformProperties={"Precision": "Double"},
         )
         simulation.context.setPositions(self.modeller.getPositions())
 
@@ -330,7 +423,11 @@ class MixedSystem:
         simulation.reporters.append(reporter)
         # Append the snapshots to the pdb file
         simulation.reporters.append(
-            PDBReporter("output_frames.pdb", steps / 80, enforcePeriodicBox=True)
+            PDBReporter(
+                os.path.join(self.output_dir, "output_frames.pdb"),
+                steps / 80,
+                enforcePeriodicBox=True,
+            )
         )
         # We need to take the final state
         simulation.step(steps)

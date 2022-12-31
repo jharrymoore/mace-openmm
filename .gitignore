@@ -2,3 +2,4 @@ tests/runs
 runs
 *.egg-info
 *.out
+mace_openmm.egg-info

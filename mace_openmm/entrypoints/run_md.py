@@ -11,7 +11,10 @@ def main():
 
     parser.add_argument("--file", "-f", type=str)
     parser.add_argument(
-        "--ml_mol", type=str, help="either smiles string or file path for the small molecule to be described by MACE", default=None
+        "--ml_mol",
+        type=str,
+        help="either smiles string or file path for the small molecule to be described by MACE",
+        default=None,
     )
     parser.add_argument(
         "--run_type", choices=["md", "repex", "neq"], type=str, default="md"
@@ -33,19 +36,31 @@ def main():
     parser.add_argument("--log_level", default=logging.INFO, type=int)
     parser.add_argument("--dtype", default="float64", choices=["float32", "float64"])
     parser.add_argument(
+        "--output_dir",
+        help="directory where all output will be written",
+        default="./junk",
+    )
+    parser.add_argument(
         "--neighbour_list", default="torch_nl", choices=["torch_nl", "torch_nl_n2"]
     )
     parser.add_argument("--log_dir", default="./logs")
-    parser.add_argument(
-        "--storage_path",
-        help="path to the nc file used by the multistate reporters",
-        default=os.path.join(os.getcwd(), "repex.nc"),
-    )
+
     parser.add_argument("--restart", action="store_true")
     parser.add_argument(
         "--forcefields",
         type=list,
-        default=["amber/protein.ff14SB.xml", "amber/tip3p_standard.xml","amber14/DNA.OL15.xml"],
+        default=[
+            "amber/protein.ff14SB.xml",
+            "amber/tip3p_standard.xml",
+            "amber14/DNA.OL15.xml",
+        ],
+    )
+    parser.add_argument(
+        "--smff",
+        help="which version of the openff small molecule forcefield to use",
+        default="1.0",
+        type=str,
+        choices=["1.0", "2.0"],
     )
     parser.add_argument(
         "--interval", help="steps between saved frames", type=int, default=100
@@ -77,6 +92,10 @@ def main():
         dtype = torch.float64
     tools.setup_logger(level=args.log_level, directory=args.log_dir)
 
+    # we don't need to specify the file twice if dealing with just the ligand
+    if args.file.endswith(".sdf") and args.ml_mol is None:
+        args.ml_mol = args.file
+
     mixed_system = MixedSystem(
         file=args.file,
         ml_mol=args.ml_mol,
@@ -88,10 +107,11 @@ def main():
         potential=args.potential,
         padding=args.padding,
         temperature=args.temperature,
-        repex_storage_path=args.storage_path,
         dtype=dtype,
+        output_dir=args.output_dir,
         neighbour_list=args.neighbour_list,
-        pure_ml_system=args.pure_ml_system
+        pure_ml_system=args.pure_ml_system,
+        smff=args.smff,
     )
     if args.run_type == "md":
         mixed_system.run_mixed_md(args.steps, args.interval, args.output_file)

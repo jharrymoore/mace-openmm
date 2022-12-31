@@ -1,5 +1,6 @@
 import pytest
 from mace_openmm.mixed_system import MixedSystem
+
 # from mace_openmm.mixed_system import MixedSystem
 import torch
 
@@ -26,13 +27,12 @@ mixed_system_kwargs = {
     "ionicStrength": 0.15,
     "nonbondedCutoff": 1.0,
     "potential": "mace",
-    "repex_storage_path": "test.nc", 
-    "neighbour_list":  'torch_nl_n2',
-    "dtype": torch.float32
+    "repex_storage_path": "test.nc",
+    "neighbour_list": "torch_nl_n2",
+    "dtype": torch.float32,
 }
 
 STEPS = 10
-
 
 
 @pytest.mark.parametrize("file, smiles, resname", data)
@@ -45,7 +45,7 @@ def test_run_plain_md(file, smiles, resname):
     )
     print("Potential ENERGY:", potential_energy)
     # Cannot reliably check the exact output, just ensure the simulation hasn't blown up
-    
+
     assert potential_energy < 0
 
 
@@ -56,6 +56,7 @@ def test_run_neq_switching(file, smiles, resname):
     )
     protocol_work = mixedSystem.run_neq_switching(steps=STEPS, interval=1)
     assert protocol_work < -4000
+
 
 # TODO: These take too long to run in a normal test situation
 # @pytest.mark.parametrize("file, smiles, resname", files)
