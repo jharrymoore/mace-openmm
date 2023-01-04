@@ -258,5 +258,4 @@ dependencies:
     - traitlets==5.5.0
     - wcwidth==0.2.5
     - git+https://github.com/jharrymoore/openmmtools.git@ommml_compat
-    - git+https://github.com/jharrymoore/torch_nl.git@development
     - git+https://github.com/openmm/openmm-ml.git
