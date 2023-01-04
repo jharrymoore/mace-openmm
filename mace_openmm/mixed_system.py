@@ -20,7 +20,6 @@ from openmm.app import (
     Modeller,
     PME,
 )
-from openmm import XmlSerializer
 from openmm.unit import nanometer, nanometers, molar, angstrom
 from openmm.unit import (
     kelvin,
@@ -41,7 +40,6 @@ from openmmml import MLPotential
 
 from openmmtools.openmm_torch.repex import (
     MixedSystemConstructor,
-    # DecoupledSystemConstructor,
     RepexConstructor,
     get_atoms_from_resname,
 )
@@ -73,6 +71,24 @@ logger = logging.getLogger("INFO")
 
 
 class MixedSystem:
+    forcefields: List[str]
+    padding: float
+    ionicStrength: float
+    nonbondedCutoff: float
+    resname: str
+    potential: str
+    temperature: float
+    friction_coeff: float
+    timestep: float
+    dtype: torch.dtype
+    output_dir: str
+    neighbour_list: str
+    openmm_precision: str
+    SM_FF: str
+    modeller: Modeller
+    mixed_system: System
+    decoupled_system: Optional[System]
+
     def __init__(
         self,
         file: str,
@@ -88,10 +104,9 @@ class MixedSystem:
         dtype: torch.dtype,
         neighbour_list: str,
         output_dir: str,
+        system_type: str,
         friction_coeff: float = 1.0,
         timestep: float = 1.0,
-        pure_ml_system: bool = False,
-        create_decoupled_system: bool = False,
         smff: str = "1.0",
     ) -> None:
 
@@ -121,12 +136,8 @@ class MixedSystem:
 
         os.makedirs(self.output_dir, exist_ok=True)
 
-        self.mixed_system, self.decoupled_system, self.modeller = self.create_mixed_system(
-            file=file,
-            ml_mol=ml_mol,
-            model_path=model_path,
-            pure_ml_system=pure_ml_system,
-            create_decoupled_system=create_decoupled_system
+        self.create_mixed_system(
+            file=file, ml_mol=ml_mol, model_path=model_path, system_type=system_type
         )
 
     def initialize_mm_forcefield(
@@ -145,9 +156,8 @@ class MixedSystem:
     def initialize_ase_atoms(self, ml_mol: str) -> Tuple[Atoms, Molecule]:
         # ml_mol can be a path to a file, or a smiles string
         if os.path.isfile(ml_mol):
-            molecule = Molecule.from_file(ml_mol)
+            molecule = Molecule.from_file(ml_mol, allow_undefined_stereo=True)
         else:
-            # we cannot initialize from smiles, since the coordinates will be garbage..
             molecule = Molecule.from_smiles(ml_mol)
 
         _, tmpfile = mkstemp(suffix="xyz")
@@ -161,9 +171,8 @@ class MixedSystem:
         file: str,
         model_path: str,
         ml_mol: str,
-        pure_ml_system: bool = False,
-        create_decoupled_system = False
-    ) -> Tuple[System, Optional[System], Modeller]:
+        system_type: str,
+    ) -> None:
         """Creates the mixed system from a purely mm system
 
         :param str file: input pdb file
@@ -171,7 +180,6 @@ class MixedSystem:
         :param str model_path: path to the mace model
         :return Tuple[System, Modeller]: return mixed system and the modeller for topology + position access by downstream methods
         """
-        decoupled_system = None
         # initialize the ase atoms for MACE
 
         atoms, molecule = self.initialize_ase_atoms(ml_mol)
@@ -183,7 +191,7 @@ class MixedSystem:
 
             # if pure_ml_system specified, we just need to parse the input file
             # if not pure_ml_system:
-            modeller = Modeller(input_file.topology, input_file.positions)
+            self.modeller = Modeller(input_file.topology, input_file.positions)
             print(f"Initialized topology with {len(input_file.positions)} positions")
 
         # Handle a ligand, passed as an sdf, override the Molecule initialized from smiles
@@ -196,35 +204,28 @@ class MixedSystem:
 
             print(f"Initialized topology with {positions.shape} positions")
 
-            modeller = Modeller(topology, positions)
+            self.modeller = Modeller(topology, positions)
 
-        if pure_ml_system:
+        if system_type == "pure":
             # we have the input_file, create the system directly from the mace potential
-            # modeller = None
-            # I happen to know that 20A is the default box size, we should automatically make sure Atoms and openMM agree on the size and position of the periodic box...
             atoms.set_cell([50, 50, 50])
             topology.setPeriodicBoxVectors([[5.0, 0, 0], [0, 5.0, 0], [0, 0, 5.0]])
             ml_potential = MLPotential("mace")
-            ml_system = ml_potential.createSystem(
+            self.mixed_system = ml_potential.createSystem(
                 topology, atoms_obj=atoms, filename=model_path, dtype=self.dtype
             )
-            # logging.info(ml_system.getDefaultPeriodicBoxVectors())
-            logging.info(
-                "pure ml system pbc:", ml_system.usesPeriodicBoundaryConditions()
-            )
-            return ml_system, modeller
 
         # Handle the mixed systems with a classical forcefield
-        else:
+        elif system_type in ["hybrid", "decoupled"]:
             forcefield = self.initialize_mm_forcefield(molecule=molecule)
-            modeller.addSolvent(
+            self.modeller.addSolvent(
                 forcefield,
                 padding=self.padding * nanometers,
                 ionicStrength=self.ionicStrength * molar,
                 neutralize=True,
             )
 
-            omm_box_vecs = modeller.topology.getPeriodicBoxVectors()
+            omm_box_vecs = self.modeller.topology.getPeriodicBoxVectors()
             # print(omm_box_vecs)
             atoms.set_cell(
                 [
@@ -235,36 +236,46 @@ class MixedSystem:
             )
 
             system = forcefield.createSystem(
-                modeller.topology,
+                self.modeller.topology,
                 nonbondedMethod=PME,
                 nonbondedCutoff=self.nonbondedCutoff * nanometer,
                 constraints=None,
             )
 
-            system = MixedSystemConstructor(
-                system=system,
-                topology=modeller.topology,
-                nnpify_resname=self.resname,
-                nnp_potential=self.potential,
-                atoms_obj=atoms,
-                filename=model_path,
-                dtype=self.dtype,
-                nl=self.neighbour_list,
-            ).mixed_system
-
             # write the final prepared system to disk
             with open(os.path.join(self.output_dir, "prepared_system.pdb"), "w") as f:
-                PDBFile.writeFile(modeller.topology, modeller.getPositions(), file=f)
+                PDBFile.writeFile(
+                    self.modeller.topology, self.modeller.getPositions(), file=f
+                )
+            if system_type == "hybrid":
+                logger.debug("Creating hybrid system")
+                self.mixed_system = MixedSystemConstructor(
+                    system=system,
+                    topology=self.modeller.topology,
+                    nnpify_resname=self.resname,
+                    nnp_potential=self.potential,
+                    atoms_obj=atoms,
+                    filename=model_path,
+                    dtype=self.dtype,
+                    nl=self.neighbour_list,
+                ).mixed_system
 
             # optionally, add the alchemical customCVForce for the nonbonded interactions to run ABFE edges
-            # if create_decoupled_system:
-            #     decoupled_system = DecoupledSystemConstructor(system).decoupled_system
-
-
-        return system, decoupled_system, modeller
-    
-
-
+            else:
+                logger.debug("Creating decoupled system")
+                self.mixed_system = MixedSystemConstructor(
+                    system=system,
+                    topology=self.modeller.topology,
+                    nnpify_resname=self.resname,
+                    nnp_potential=self.potential,
+                    atoms_obj=atoms,
+                    filename=model_path,
+                    dtype=self.dtype,
+                    nl=self.neighbour_list,
+                ).decoupled_system
+            
+        else:
+            raise ValueError(f"system type {system_type} not recognised - aborting!")
     # def run_abfe
 
     def run_mixed_md(self, steps: int, interval: int, output_file: str) -> float:
@@ -285,14 +296,9 @@ class MixedSystem:
         )
         simulation.context.setPositions(self.modeller.getPositions())
         # simulation.context.setVelocitiesToTemperature(self.temperature)
-        try:
-            logging.info("Minimising energy...")
-            # simulation.context.setParameter("lambda_interpolate", 0)
-            simulation.minimizeEnergy()
-        except:
-            logging.info("Falling back to MM minimisation...")
-            simulation.minimizeEnergy()
-
+        logging.info("Minimising energy...")
+        # simulation.context.setParameter("lambda_interpolate", 0)
+        simulation.minimizeEnergy()
         minimised_state = simulation.context.getState(
             getPositions=True, getVelocities=True, getForces=True
         )

@@ -78,8 +78,9 @@ def main():
         help="path to the mace model",
         default="tests/test_openmm/MACE_SPICE_larger.model",
     )
-    parser.add_argument("--pure_ml_system", action="store_true")
-    parser.add_argument("--create_decoupled_system", action="store_true")
+    parser.add_argument(
+        "--system_type", type=str, choices=["pure", "hybrid", "decoupled"]
+    )
     args = parser.parse_args()
 
     if args.dtype == "float32":
@@ -111,7 +112,7 @@ def main():
         dtype=dtype,
         output_dir=args.output_dir,
         neighbour_list=args.neighbour_list,
-        pure_ml_system=args.pure_ml_system,
+        system_type=args.system_type,
         smff=args.smff,
     )
     if args.run_type == "md":
