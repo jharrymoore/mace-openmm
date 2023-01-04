@@ -154,6 +154,11 @@ class MixedSystem:
         return forcefield
 
     def initialize_ase_atoms(self, ml_mol: str) -> Tuple[Atoms, Molecule]:
+        """Generate the ase atoms object from the   
+
+        :param str ml_mol: file path or smiles  
+        :return Tuple[Atoms, Molecule]: ase Atoms object and initialised openFF molecule
+        """
         # ml_mol can be a path to a file, or a smiles string
         if os.path.isfile(ml_mol):
             molecule = Molecule.from_file(ml_mol, allow_undefined_stereo=True)
