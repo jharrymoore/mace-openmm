@@ -257,3 +257,4 @@ dependencies:
     - torch-nl==0.2
     - traitlets==5.5.0
     - wcwidth==0.2.5
+    - torch_nl==0.2

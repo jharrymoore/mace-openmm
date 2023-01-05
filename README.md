@@ -40,7 +40,7 @@ conda activate mlmm_dev
 
 git clone --branch ommml_compat git@github.com:jharrymoore/openmmtools.git
 
-git clone git@github.com:openmm/openmm-ml.git
+git clone git@github.com:jharrymoore/openmm-ml.git
 
 git clone --branch torchscript_merge git@github.com:ACEsuit/mace.git
 
