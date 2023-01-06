@@ -7,7 +7,7 @@ import sys
 from ase import Atoms
 from openmm.openmm import System
 from typing import List, Tuple, Optional
-from openmm import LangevinMiddleIntegrator, Vec3
+from openmm import LangevinMiddleIntegrator, Vec3, MonteCarloBarostat
 from openmmtools.integrators import AlchemicalNonequilibriumLangevinIntegrator
 from openmm.app import (
     Simulation,
@@ -18,6 +18,7 @@ from openmm.app import (
     HBonds,
     AllBonds,
     Modeller,
+
     PME,
 )
 from openmm.unit import nanometer, nanometers, molar, angstrom
@@ -28,6 +29,7 @@ from openmm.unit import (
     kilojoule_per_mole,
     picoseconds,
     femtoseconds,
+    bar
 )
 from openff.toolkit.topology import Molecule
 
@@ -108,6 +110,7 @@ class MixedSystem:
         friction_coeff: float = 1.0,
         timestep: float = 1.0,
         smff: str = "1.0",
+        pressure: Optional[float] = None
     ) -> None:
 
         self.forcefields = forcefields
@@ -137,7 +140,7 @@ class MixedSystem:
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.create_mixed_system(
-            file=file, ml_mol=ml_mol, model_path=model_path, system_type=system_type
+            file=file, ml_mol=ml_mol, model_path=model_path, system_type=system_type, pressure=pressure
         )
 
     def initialize_mm_forcefield(
@@ -177,6 +180,7 @@ class MixedSystem:
         model_path: str,
         ml_mol: str,
         system_type: str,
+        pressure: Optional[float]
     ) -> None:
         """Creates the mixed system from a purely mm system
 
@@ -213,6 +217,7 @@ class MixedSystem:
 
         if system_type == "pure":
             # we have the input_file, create the system directly from the mace potential
+            # TODO: add a function to compute periodic box vectors to enforce a minimum padding distance to each box wall
             atoms.set_cell([50, 50, 50])
             topology.setPeriodicBoxVectors([[5.0, 0, 0], [0, 5.0, 0], [0, 0, 5.0]])
             ml_potential = MLPotential("mace")
@@ -246,6 +251,10 @@ class MixedSystem:
                 nonbondedCutoff=self.nonbondedCutoff * nanometer,
                 constraints=None,
             )
+            if pressure is not None:
+                logger.info(f"Pressure will be maintained at {pressure} bar with MC barostat")
+                system.addForce(MonteCarloBarostat(pressure*bar, self.temperature*kelvin))
+
 
             # write the final prepared system to disk
             with open(os.path.join(self.output_dir, "prepared_system.pdb"), "w") as f:
@@ -300,9 +309,7 @@ class MixedSystem:
             platformProperties={"Precision": self.openmm_precision},
         )
         simulation.context.setPositions(self.modeller.getPositions())
-        # simulation.context.setVelocitiesToTemperature(self.temperature)
         logging.info("Minimising energy...")
-        # simulation.context.setParameter("lambda_interpolate", 0)
         simulation.minimizeEnergy()
         minimised_state = simulation.context.getState(
             getPositions=True, getVelocities=True, getForces=True

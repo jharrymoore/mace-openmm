@@ -2,7 +2,6 @@ from argparse import ArgumentParser
 from mace_openmm.mixed_system import MixedSystem
 from mace import tools
 import logging
-import os
 import torch
 
 
@@ -25,6 +24,7 @@ def main():
     parser.add_argument("--ionicStrength", "-i", default=0.15, type=float)
     parser.add_argument("--potential", default="mace", type=str)
     parser.add_argument("--temperature", type=float, default=298.15)
+    parser.add_argument("--pressure", type=float, default=None)
     parser.add_argument("--replicas", type=int, default=10)
     parser.add_argument(
         "--output_file",
@@ -114,6 +114,7 @@ def main():
         neighbour_list=args.neighbour_list,
         system_type=args.system_type,
         smff=args.smff,
+        pressure=args.pressure
     )
     if args.run_type == "md":
         mixed_system.run_mixed_md(args.steps, args.interval, args.output_file)
