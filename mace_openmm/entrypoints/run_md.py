@@ -43,6 +43,10 @@ def main():
     parser.add_argument(
         "--neighbour_list", default="torch_nl", choices=["torch_nl", "torch_nl_n2"]
     )
+
+    # optionally specify box vectors for periodic systems
+    parser.add_argument('--boxvec', type=float, nargs='+', action='append')
+
     parser.add_argument("--log_dir", default="./logs")
 
     parser.add_argument("--restart", action="store_true")
@@ -97,6 +101,8 @@ def main():
     # we don't need to specify the file twice if dealing with just the ligand
     if args.file.endswith(".sdf") and args.ml_mol is None:
         args.ml_mol = args.file
+
+    print(args.boxvec)
 
     mixed_system = MixedSystem(
         file=args.file,

@@ -107,6 +107,7 @@ class MixedSystem:
         neighbour_list: str,
         output_dir: str,
         system_type: str,
+        boxvecs: Optional[List[List]] = None,
         friction_coeff: float = 1.0,
         timestep: float = 1.0,
         smff: str = "1.0",
@@ -126,6 +127,7 @@ class MixedSystem:
         self.output_dir = output_dir
         self.neighbour_list = neighbour_list
         self.openmm_precision = "Double" if dtype == torch.float64 else "Mixed"
+        self.boxvecs = boxvecs if boxvecs is not None else [[5.0, 0, 0], [0, 5.0, 0], [0, 0, 5.0]]
         logger.debug(f"OpenMM will use {self.openmm_precision} precision")
 
         if smff == "1.0":
@@ -218,8 +220,10 @@ class MixedSystem:
         if system_type == "pure":
             # we have the input_file, create the system directly from the mace potential
             # TODO: add a function to compute periodic box vectors to enforce a minimum padding distance to each box wall
-            atoms.set_cell([50, 50, 50])
-            topology.setPeriodicBoxVectors([[5.0, 0, 0], [0, 5.0, 0], [0, 0, 5.0]])
+            atoms.set_cell(np.array(self.boxvecs) * 10) # set in angstroms
+            # atoms.set_cell([50,50,50])
+            print(self.boxvecs)
+            topology.setPeriodicBoxVectors(self.boxvecs)
             ml_potential = MLPotential("mace")
             self.mixed_system = ml_potential.createSystem(
                 topology, atoms_obj=atoms, filename=model_path, dtype=self.dtype
