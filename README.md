@@ -42,7 +42,9 @@ git clone --branch ommml_compat git@github.com:jharrymoore/openmmtools.git
 
 git clone git@github.com:jharrymoore/openmm-ml.git
 
-git clone --branch torchscript_merge git@github.com:ACEsuit/mace.git
+git clone --branch torchscript_merge_openmm git@github.com:jharrymoore/mace.git
+
+git clone --branch development git@github.com:jharrymoore/torch_nl.git
 
 cd openmmtools
 
@@ -53,6 +55,10 @@ cd ../openmm-ml
 pip install .
  
 cd ../mace
+
+pip install .
+
+cd ../torch_nl
 
 pip install .
 
