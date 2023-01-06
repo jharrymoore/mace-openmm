@@ -222,7 +222,6 @@ class MixedSystem:
             # TODO: add a function to compute periodic box vectors to enforce a minimum padding distance to each box wall
             atoms.set_cell(np.array(self.boxvecs) * 10) # set in angstroms
             # atoms.set_cell([50,50,50])
-            print(self.boxvecs)
             topology.setPeriodicBoxVectors(self.boxvecs)
             ml_potential = MLPotential("mace")
             self.mixed_system = ml_potential.createSystem(

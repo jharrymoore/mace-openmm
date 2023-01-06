@@ -45,7 +45,7 @@ def main():
     )
 
     # optionally specify box vectors for periodic systems
-    parser.add_argument('--boxvec', type=float, nargs='+', action='append')
+    parser.add_argument('--box', type=float, nargs='+', action='append')
 
     parser.add_argument("--log_dir", default="./logs")
 
@@ -102,7 +102,6 @@ def main():
     if args.file.endswith(".sdf") and args.ml_mol is None:
         args.ml_mol = args.file
 
-    print(args.boxvec)
 
     mixed_system = MixedSystem(
         file=args.file,
@@ -120,7 +119,8 @@ def main():
         neighbour_list=args.neighbour_list,
         system_type=args.system_type,
         smff=args.smff,
-        pressure=args.pressure
+        pressure=args.pressure,
+        boxvecs=args.box
     )
     if args.run_type == "md":
         mixed_system.run_mixed_md(args.steps, args.interval, args.output_file)
