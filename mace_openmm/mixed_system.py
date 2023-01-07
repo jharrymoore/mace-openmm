@@ -442,3 +442,145 @@ class MixedSystem:
         simulation.step(steps)
         protocol_work = (integrator.get_protocol_work(dimensionless=True),)
         return protocol_work
+
+class MACESystem:
+    potential: str
+    temperature: float
+    friction_coeff: float
+    timestep: float
+    dtype: torch.dtype
+    output_dir: str
+    neighbour_list: str
+    openmm_precision: str
+    SM_FF: str
+    modeller: Modeller
+
+    def __init__(
+        self,
+        file: str,
+        model_path: str,
+        potential: str,
+        temperature: float,
+        dtype: torch.dtype,
+        neighbour_list: str,
+        output_dir: str,
+        friction_coeff: float = 1.0,
+        timestep: float = 1.0,
+        smff: str = "1.0",
+    ) -> None:
+
+        self.potential = potential
+        self.temperature = temperature
+        self.friction_coeff = friction_coeff / picosecond
+        self.timestep = timestep * femtosecond
+        self.dtype = dtype
+        self.output_dir = output_dir
+        self.neighbour_list = neighbour_list
+        self.openmm_precision = "Double" if dtype == torch.float64 else "Mixed"
+        logger.debug(f"OpenMM will use {self.openmm_precision} precision")
+
+        if smff == "1.0":
+            self.SM_FF = "openff_unconstrained-1.0.0.offxml"
+            logger.info("Using openff-1.0 unconstrained forcefield")
+        elif smff == "2.0":
+            self.SM_FF = "openff_unconstrained-2.0.0.offxml"
+            logger.info("Using openff-2.0 unconstrained forcefield")
+        else:
+            raise ValueError(f"Small molecule forcefield {smff} not recognised")
+
+        os.makedirs(self.output_dir, exist_ok=True)
+
+        self.create_system(
+            file=file, model_path=model_path,
+        )
+
+    def create_system(
+        self,
+        file: str,
+        model_path: str,
+    ) -> None:
+        """Creates the mixed system from a purely mm system
+
+        :param str file: input pdb file
+        :param str model_path: path to the mace model
+        :return Tuple[System, Modeller]: return mixed system and the modeller for topology + position access by downstream methods
+        """
+        # initialize the ase atoms for MACE
+        atoms = read(file)
+
+        # Handle a system, passed as a pdb file
+        # if file.endswith(".pdb"):
+        #     input_file = PDBFile(file)
+        #     topology = input_file.getTopology()
+
+        #     # if pure_ml_system specified, we just need to parse the input file
+        #     # if not pure_ml_system:
+        #     self.modeller = Modeller(input_file.topology, input_file.positions)
+        #     print(f"Initialized topology with {len(input_file.positions)} positions")
+
+        if file.endswith(".sdf"):
+            molecule = Molecule.from_file(file)
+            #input_file = molecule
+            topology = molecule.to_topology().to_openmm()
+            # Hold positions in nanometers
+            positions = get_xyz_from_mol(molecule.to_rdkit()) / 10
+
+            print(f"Initialized topology with {positions.shape} positions")
+
+            self.modeller = Modeller(topology, positions)
+        else:
+            raise NotImplementedError
+
+        ml_potential = MLPotential("mace")
+        self.mixed_system = ml_potential.createSystem(
+            topology, atoms_obj=atoms, filename=model_path, dtype=self.dtype
+        )
+
+    def run_md(self, steps: int, interval: int, output_file: str) -> float:
+        """Runs Langevin MD with MACE, writes a pdb trajectory
+
+        :param int steps: number of steps to run the simulation for
+        :param int interval: reportInterval attached to reporters
+        """
+        integrator = LangevinMiddleIntegrator(
+            self.temperature, self.friction_coeff, self.timestep
+        )
+
+        simulation = Simulation(
+            self.modeller.topology,
+            self.mixed_system,
+            integrator,
+            platformProperties={"Precision": self.openmm_precision},
+        )
+        simulation.context.setPositions(self.modeller.getPositions())
+        # simulation.context.setVelocitiesToTemperature(self.temperature)
+        # logging.info("Minimising energy...")
+        # simulation.context.setParameter("lambda_interpolate", 0)
+        # simulation.minimizeEnergy()
+        # minimised_state = simulation.context.getState(
+        #     getPositions=True, getVelocities=True, getForces=True
+        # )
+        # with open(os.path.join(self.output_dir, f"minimised_system.pdb"), "w") as f:
+        #     PDBFile.writeFile(
+        #         self.modeller.topology, minimised_state.getPositions(), file=f
+        #     )
+
+        reporter = StateDataReporter(
+            file=sys.stdout,
+            reportInterval=interval,
+            step=True,
+            time=True,
+            potentialEnergy=True,
+            temperature=True,
+            speed=True,
+        )
+        simulation.reporters.append(reporter)
+        simulation.reporters.append(
+            PDBReporter(
+                file=os.path.join(self.output_dir, output_file),
+                reportInterval=interval,
+                enforcePeriodicBox=False,
+            )
+        )
+
+        simulation.step(steps)
