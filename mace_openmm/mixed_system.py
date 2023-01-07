@@ -6,8 +6,8 @@ import numpy as np
 import sys
 from ase import Atoms
 from openmm.openmm import System
-from typing import List, Tuple, Optional
-from openmm import LangevinMiddleIntegrator, Vec3
+from typing import List, Tuple, Optional, Union, Type
+from openmm import LangevinMiddleIntegrator, Vec3, MonteCarloBarostat
 from openmmtools.integrators import AlchemicalNonequilibriumLangevinIntegrator
 from openmm.app import (
     Simulation,
@@ -20,6 +20,8 @@ from openmm.app import (
     Modeller,
     PME,
 )
+from openmm.app.topology import Topology
+from openmm.app.element import Element
 from openmm.unit import nanometer, nanometers, molar, angstrom
 from openmm.unit import (
     kelvin,
@@ -28,6 +30,7 @@ from openmm.unit import (
     kilojoule_per_mole,
     picoseconds,
     femtoseconds,
+    bar,
 )
 from openff.toolkit.topology import Molecule
 
@@ -460,10 +463,11 @@ class MACESystem:
         file: str,
         model_path: str,
         potential: str,
-        temperature: float,
-        dtype: torch.dtype,
-        neighbour_list: str,
         output_dir: str,
+        temperature: float,
+        pressure: Optional[float] = None,
+        dtype: torch.dtype = torch.float64,
+        neighbour_list: str = "torch_nl_n2",
         friction_coeff: float = 1.0,
         timestep: float = 1.0,
         smff: str = "1.0",
@@ -472,6 +476,7 @@ class MACESystem:
         self.potential = potential
         self.temperature = temperature
         self.friction_coeff = friction_coeff / picosecond
+        self.pressure = pressure
         self.timestep = timestep * femtosecond
         self.dtype = dtype
         self.output_dir = output_dir
@@ -491,13 +496,14 @@ class MACESystem:
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.create_system(
-            file=file, model_path=model_path,
+            file = file, model_path = model_path, pressure = pressure
         )
 
     def create_system(
         self,
         file: str,
         model_path: str,
+        pressure: Union[float, Type[None]],
     ) -> None:
         """Creates the mixed system from a purely mm system
 
@@ -507,7 +513,25 @@ class MACESystem:
         """
         # initialize the ase atoms for MACE
         atoms = read(file)
+        if file.endswith(".xyz"):
+            pos = atoms.get_positions() / 10
+            box_vectors = atoms.get_cell() / 10
+            elements = atoms.get_chemical_symbols()
 
+            # Create a topology object
+            topology = Topology()
+
+            # Add atoms to the topology
+            chain = topology.addChain()
+            res = topology.addResidue("mace_system", chain)
+            for i, (element, position) in enumerate(zip(elements, pos)):
+                e = Element.getBySymbol(element)
+                topology.addAtom(str(i), e, res)
+            # if there is a periodic box specified add it to the Topology
+            if max(atoms.get_cell().cellpar()[:3]) > 0:
+                topology.setPeriodicBoxVectors(vectors=box_vectors)
+
+            self.modeller = Modeller(topology, pos)
         # Handle a system, passed as a pdb file
         # if file.endswith(".pdb"):
         #     input_file = PDBFile(file)
@@ -518,7 +542,7 @@ class MACESystem:
         #     self.modeller = Modeller(input_file.topology, input_file.positions)
         #     print(f"Initialized topology with {len(input_file.positions)} positions")
 
-        if file.endswith(".sdf"):
+        elif file.endswith(".sdf"):
             molecule = Molecule.from_file(file)
             #input_file = molecule
             topology = molecule.to_topology().to_openmm()
@@ -535,6 +559,10 @@ class MACESystem:
         self.mixed_system = ml_potential.createSystem(
             topology, atoms_obj=atoms, filename=model_path, dtype=self.dtype
         )
+
+        if pressure is not None:
+            logger.info(f"Pressure will be maintained at {pressure} bar with MC barostat")
+            self.mixed_system.addForce(MonteCarloBarostat(pressure*bar, self.temperature*kelvin))
 
     def run_md(self, steps: int, interval: int, output_file: str) -> float:
         """Runs Langevin MD with MACE, writes a pdb trajectory
