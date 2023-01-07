@@ -485,7 +485,6 @@ class MACESystem:
         self.potential = potential
         self.temperature = temperature
         self.friction_coeff = friction_coeff / picosecond
-        self.pressure = pressure
         self.timestep = timestep * femtosecond
         self.dtype = dtype
         self.output_dir = output_dir
@@ -539,6 +538,8 @@ class MACESystem:
             # if there is a periodic box specified add it to the Topology
             if max(atoms.get_cell().cellpar()[:3]) > 0:
                 topology.setPeriodicBoxVectors(vectors=box_vectors)
+            
+            print(f"Initialized topology with {pos.shape} positions")
 
             self.modeller = Modeller(topology, pos)
         # Handle a system, passed as a pdb file
@@ -570,8 +571,10 @@ class MACESystem:
         )
 
         if pressure is not None:
-            logger.info(f"Pressure will be maintained at {pressure} bar with MC barostat")
-            self.mixed_system.addForce(MonteCarloBarostat(pressure*bar, self.temperature*kelvin))
+            print(f"Pressure will be maintained at {pressure} bar with MC barostat")
+            barostat = MonteCarloBarostat(pressure*bar, self.temperature*kelvin)
+            # barostat.setFrequency(25)  25 timestep is the default
+            self.mixed_system.addForce(barostat)
 
     def run_md(self, steps: int, interval: int, output_file: str) -> float:
         """Runs Langevin MD with MACE, writes a pdb trajectory
@@ -616,7 +619,7 @@ class MACESystem:
             PDBReporter(
                 file=os.path.join(self.output_dir, output_file),
                 reportInterval=interval,
-                enforcePeriodicBox=False,
+                enforcePeriodicBox=True,
             )
         )
 
