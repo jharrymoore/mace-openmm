@@ -5,6 +5,7 @@ import time
 import numpy as np
 import sys
 from ase import Atoms
+from rdkit.Chem.rdmolfiles import MolFromPDBFile, MolFromXYZFile
 from openmm.openmm import System
 from typing import List, Tuple, Optional, Union, Type
 from openmm import LangevinMiddleIntegrator, Vec3, MonteCarloBarostat
@@ -15,10 +16,7 @@ from openmm.app import (
     PDBReporter,
     ForceField,
     PDBFile,
-    HBonds,
-    AllBonds,
     Modeller,
-
     PME,
 )
 from openmm.app.topology import Topology
@@ -160,6 +158,24 @@ class MixedSystem:
             forcefield.registerTemplateGenerator(smirnoff.generator)
         return forcefield
 
+    # def initialize_ase_atoms(self, ml_mol: str) -> Tuple[Atoms, Molecule]:
+    #     """Generate the ase atoms object from the   
+
+    #     :param str ml_mol: file path or smiles  
+    #     :return Tuple[Atoms, Molecule]: ase Atoms object and initialised openFF molecule
+    #     """
+    #     # ml_mol can be a path to a file, or a smiles string
+    #     if os.path.isfile(ml_mol):
+    #         molecule = Molecule.from_file(ml_mol, allow_undefined_stereo=True)
+    #     else:
+    #         molecule = Molecule.from_smiles(ml_mol)
+
+    #     _, tmpfile = mkstemp(suffix="xyz")
+    #     molecule._to_xyz_file(tmpfile)
+    #     atoms = read(tmpfile)
+    #     os.remove(tmpfile)
+    #     return atoms, molecule
+    
     def initialize_ase_atoms(self, ml_mol: str) -> Tuple[Atoms, Molecule]:
         """Generate the ase atoms object from the   
 
@@ -168,11 +184,23 @@ class MixedSystem:
         """
         # ml_mol can be a path to a file, or a smiles string
         if os.path.isfile(ml_mol):
-            molecule = Molecule.from_file(ml_mol, allow_undefined_stereo=True)
+            if ml_mol.endswith(".pdb"):
+                # openFF refuses to work with pdb or xyz files, rely on rdkit to do the convertion to a mol first
+                molecule = MolFromPDBFile(ml_mol)
+                molecule = Molecule.from_rdkit(molecule)
+            elif ml_mol.endswith(".xyz"):
+                molecule = MolFromXYZFile(ml_mol)
+                molecule = Molecule.from_rdkit(molecule, hydrogens_are_explicit=True)
+            else:
+                # assume openFF will handle the format otherwise
+                molecule = Molecule.from_file(ml_mol, allow_undefined_stereo=True)
         else:
-            molecule = Molecule.from_smiles(ml_mol)
+            try:
+                molecule = Molecule.from_smiles(ml_mol)
+            except:
+                raise ValueError(f"Attempted to interpret arg {ml_mol} as a SMILES string, but could not parse")
 
-        _, tmpfile = mkstemp(suffix="xyz")
+        _, tmpfile = mkstemp(suffix=".xyz")
         molecule._to_xyz_file(tmpfile)
         atoms = read(tmpfile)
         os.remove(tmpfile)
