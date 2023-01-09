@@ -14,6 +14,7 @@ from openmm.app import (
     Simulation,
     StateDataReporter,
     PDBReporter,
+    DCDReporter,
     ForceField,
     PDBFile,
     Modeller,
@@ -334,7 +335,7 @@ class MixedSystem:
         integrator = LangevinMiddleIntegrator(
             self.temperature, self.friction_coeff, self.timestep
         )
-
+        logger.debug(f"Running mixed MD for {steps} steps")
         simulation = Simulation(
             self.modeller.topology,
             self.mixed_system,
@@ -380,11 +381,24 @@ class MixedSystem:
             PDBReporter(
                 file=os.path.join(self.output_dir, output_file),
                 reportInterval=interval,
-                enforcePeriodicBox=False,
+                enforcePeriodicBox=True,
             )
         )
+        # write to dcd file for proper analysis
+        dcd_reporter = DCDReporter(
+                file=os.path.join(self.output_dir, output_file[:-4] + ".dcd"),
+                reportInterval=interval,
+                enforcePeriodicBox=True,
+            )
+        print(dcd_reporter.describeNextReport(simulation))
+        simulation.reporters.append(
+            dcd_reporter
+        )
+        
+
 
         simulation.step(steps)
+        return 0
 
     def run_replex_equilibrium_fep(
         self, replicas: int, restart: bool, steps: int

@@ -1,3 +1,5 @@
+import os
+import mpiplus
 from argparse import ArgumentParser
 from mace_openmm.mixed_system import MixedSystem
 from mace import tools
@@ -83,7 +85,7 @@ def main():
         default="tests/test_openmm/MACE_SPICE_larger.model",
     )
     parser.add_argument(
-        "--system_type", type=str, choices=["pure", "hybrid", "decoupled"]
+        "--system_type", type=str, choices=["pure", "hybrid", "decoupled"], default="pure"
     )
     args = parser.parse_args()
 
@@ -103,33 +105,83 @@ def main():
         args.ml_mol = args.file
 
 
-    mixed_system = MixedSystem(
-        file=args.file,
-        ml_mol=args.ml_mol,
-        model_path=args.model_path,
-        forcefields=args.forcefields,
-        resname=args.resname,
-        ionicStrength=args.ionicStrength,
-        nonbondedCutoff=args.nonbondedCutoff,
-        potential=args.potential,
-        padding=args.padding,
-        temperature=args.temperature,
-        dtype=dtype,
-        output_dir=args.output_dir,
-        neighbour_list=args.neighbour_list,
-        system_type=args.system_type,
-        smff=args.smff,
-        pressure=args.pressure,
-        boxvecs=args.box
-    )
-    if args.run_type == "md":
-        mixed_system.run_mixed_md(args.steps, args.interval, args.output_file)
-    elif args.run_type == "repex":
-        mixed_system.run_replex_equilibrium_fep(args.replicas, args.restart, args.steps)
-    elif args.run_type == "neq":
-        mixed_system.run_neq_switching(args.steps, args.interval)
+    # TODO: refactor this
+    # user has specified a directory containing sdf files, parallelise over MPI ranks
+    if os.path.isdir(args.file) and all([f.endswith(".sdf") for f in os.listdir(args.file)]):
+        if args.run_type != "md":
+            raise ValueError(f"When multiple moleucles are specified, only MD can be specified as the running mode, not {args.run_type}")
+        def _initialize_mixed_system(sdf_file):
+            with open(sdf_file, 'r') as f:
+                # crudely extract resname as first line of sdf file
+                lines = f.readlines()
+                resname = lines[0].strip()
+                print(f"Got resname {resname} ")
+
+            return MixedSystem(
+                file=sdf_file,
+                ml_mol=sdf_file,
+                model_path=args.model_path,
+                forcefields=args.forcefields,
+                resname=resname,
+                ionicStrength=args.ionicStrength,
+                nonbondedCutoff=args.nonbondedCutoff,
+                potential=args.potential,
+                padding=args.padding,
+                temperature=args.temperature,
+                dtype=dtype,
+                output_dir=os.path.join(args.output_dir,resname),
+                neighbour_list=args.neighbour_list,
+                system_type=args.system_type,
+                smff=args.smff,
+                pressure=args.pressure,
+                boxvecs=args.box
+            )
+
+        ml_mols = [os.path.join(args.file, f) for f in os.listdir(args.file)]
+        
+        mixed_systems, _ = mpiplus.distribute(_initialize_mixed_system, ml_mols, send_results_to=0, sync_nodes=True)
+        print("mixed systems: ", mixed_systems)
+
+        def _run_mixed_md(system_idx: int):
+            return mixed_systems[system_idx].run_mixed_md(args.steps, args.interval, args.output_file)
+        # now distribute execution of the MD jobs between the MPI ranks
+        
+        print("Running MD on parallel MPI ranks")
+        mpiplus.distribute(_run_mixed_md, range(len(mixed_systems)), send_results_to=None, propagate_exceptions_to=None, sync_nodes=True)
+        # print(results)
+
+
     else:
-        raise ValueError(f"run_type {args.run_type} was not recognised")
+
+
+
+        mixed_system = MixedSystem(
+            file=args.file,
+            ml_mol=args.ml_mol,
+            model_path=args.model_path,
+            forcefields=args.forcefields,
+            resname=args.resname,
+            ionicStrength=args.ionicStrength,
+            nonbondedCutoff=args.nonbondedCutoff,
+            potential=args.potential,
+            padding=args.padding,
+            temperature=args.temperature,
+            dtype=dtype,
+            output_dir=args.output_dir,
+            neighbour_list=args.neighbour_list,
+            system_type=args.system_type,
+            smff=args.smff,
+            pressure=args.pressure,
+            boxvecs=args.box
+        )
+        if args.run_type == "md":
+            mixed_system.run_mixed_md(args.steps, args.interval, args.output_file)
+        elif args.run_type == "repex":
+            mixed_system.run_replex_equilibrium_fep(args.replicas, args.restart, args.steps)
+        elif args.run_type == "neq":
+            mixed_system.run_neq_switching(args.steps, args.interval)
+        else:
+            raise ValueError(f"run_type {args.run_type} was not recognised")
 
 
 if __name__ == "__main__":
