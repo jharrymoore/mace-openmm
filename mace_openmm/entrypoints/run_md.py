@@ -138,8 +138,11 @@ def main():
             )
 
         ml_mols = [os.path.join(args.file, f) for f in os.listdir(args.file)]
+
+        #TODO: Why does system setup with MPI cause the downstream MPI processes to misbehave?
         
-        mixed_systems, _ = mpiplus.distribute(_initialize_mixed_system, ml_mols, send_results_to=0, sync_nodes=True)
+        # mixed_systems, _ = mpiplus.distribute(_initialize_mixed_system, ml_mols, send_results_to=0, sync_nodes=True)
+        mixed_systems = [_initialize_mixed_system(sdf_file) for sdf_file in ml_mols]
         print("mixed systems: ", mixed_systems)
 
         def _run_mixed_md(system_idx: int):
@@ -147,7 +150,7 @@ def main():
         # now distribute execution of the MD jobs between the MPI ranks
         
         print("Running MD on parallel MPI ranks")
-        mpiplus.distribute(_run_mixed_md, range(len(mixed_systems)), send_results_to=None, propagate_exceptions_to=None, sync_nodes=True)
+        mpiplus.distribute(_run_mixed_md, range(len(mixed_systems)))
         # print(results)
 
 
