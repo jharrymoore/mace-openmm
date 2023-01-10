@@ -47,7 +47,7 @@ def main():
     )
 
     # optionally specify box vectors for periodic systems
-    parser.add_argument('--box', type=float, nargs='+', action='append')
+    parser.add_argument("--box", type=float, nargs="+", action="append")
 
     parser.add_argument("--log_dir", default="./logs")
 
@@ -85,7 +85,10 @@ def main():
         default="tests/test_openmm/MACE_SPICE_larger.model",
     )
     parser.add_argument(
-        "--system_type", type=str, choices=["pure", "hybrid", "decoupled"], default="pure"
+        "--system_type",
+        type=str,
+        choices=["pure", "hybrid", "decoupled"],
+        default="pure",
     )
     args = parser.parse_args()
 
@@ -104,14 +107,18 @@ def main():
     if args.file.endswith(".sdf") and args.ml_mol is None:
         args.ml_mol = args.file
 
-
     # TODO: refactor this
     # user has specified a directory containing sdf files, parallelise over MPI ranks
-    if os.path.isdir(args.file) and all([f.endswith(".sdf") for f in os.listdir(args.file)]):
+    if os.path.isdir(args.file) and all(
+        [f.endswith(".sdf") for f in os.listdir(args.file)]
+    ):
         if args.run_type != "md":
-            raise ValueError(f"When multiple moleucles are specified, only MD can be specified as the running mode, not {args.run_type}")
+            raise ValueError(
+                f"When multiple moleucles are specified, only MD can be specified as the running mode, not {args.run_type}"
+            )
+
         def _initialize_mixed_system(sdf_file):
-            with open(sdf_file, 'r') as f:
+            with open(sdf_file, "r") as f:
                 # crudely extract resname as first line of sdf file
                 lines = f.readlines()
                 resname = lines[0].strip()
@@ -129,34 +136,34 @@ def main():
                 padding=args.padding,
                 temperature=args.temperature,
                 dtype=dtype,
-                output_dir=os.path.join(args.output_dir,resname),
+                output_dir=os.path.join(args.output_dir, resname),
                 neighbour_list=args.neighbour_list,
                 system_type=args.system_type,
                 smff=args.smff,
                 pressure=args.pressure,
-                boxvecs=args.box
+                boxvecs=args.box,
             )
 
         ml_mols = [os.path.join(args.file, f) for f in os.listdir(args.file)]
 
-        #TODO: Why does system setup with MPI cause the downstream MPI processes to misbehave?
-        
+        # TODO: Why does system setup with MPI cause the downstream MPI processes to misbehave?
+
         # mixed_systems, _ = mpiplus.distribute(_initialize_mixed_system, ml_mols, send_results_to=0, sync_nodes=True)
         mixed_systems = [_initialize_mixed_system(sdf_file) for sdf_file in ml_mols]
         print("mixed systems: ", mixed_systems)
 
         def _run_mixed_md(system_idx: int):
-            return mixed_systems[system_idx].run_mixed_md(args.steps, args.interval, args.output_file)
+            return mixed_systems[system_idx].run_mixed_md(
+                args.steps, args.interval, args.output_file
+            )
+
         # now distribute execution of the MD jobs between the MPI ranks
-        
+
         print("Running MD on parallel MPI ranks")
         mpiplus.distribute(_run_mixed_md, range(len(mixed_systems)))
         # print(results)
 
-
     else:
-
-
 
         mixed_system = MixedSystem(
             file=args.file,
@@ -175,12 +182,14 @@ def main():
             system_type=args.system_type,
             smff=args.smff,
             pressure=args.pressure,
-            boxvecs=args.box
+            boxvecs=args.box,
         )
         if args.run_type == "md":
             mixed_system.run_mixed_md(args.steps, args.interval, args.output_file)
         elif args.run_type == "repex":
-            mixed_system.run_replex_equilibrium_fep(args.replicas, args.restart, args.steps)
+            mixed_system.run_replex_equilibrium_fep(
+                args.replicas, args.restart, args.steps
+            )
         elif args.run_type == "neq":
             mixed_system.run_neq_switching(args.steps, args.interval)
         else:
