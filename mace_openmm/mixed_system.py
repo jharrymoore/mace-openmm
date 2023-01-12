@@ -195,7 +195,8 @@ class MixedSystem:
             if ml_mol.endswith(".pdb"):
                 # openFF refuses to work with pdb or xyz files, rely on rdkit to do the convertion to a mol first
                 molecule = MolFromPDBFile(ml_mol)
-                molecule = Molecule.from_rdkit(molecule)
+                logger.warn("Initializing topology from pdb - this can lead to valence errors, check your starting structure carefully!")
+                molecule = Molecule.from_rdkit(molecule, hydrogens_are_explicit=True)
             elif ml_mol.endswith(".xyz"):
                 molecule = MolFromXYZFile(ml_mol)
                 molecule = Molecule.from_rdkit(molecule, hydrogens_are_explicit=True)
@@ -212,8 +213,9 @@ class MixedSystem:
 
         _, tmpfile = mkstemp(suffix=".xyz")
         molecule._to_xyz_file(tmpfile)
+        print(tmpfile)
         atoms = read(tmpfile)
-        os.remove(tmpfile)
+        # os.remove(tmpfile)
         return atoms, molecule
 
     def create_mixed_system(
@@ -234,6 +236,8 @@ class MixedSystem:
         # initialize the ase atoms for MACE
 
         atoms, molecule = self.initialize_ase_atoms(ml_mol)
+        # set the default topology to that of the ml molecule, this will get overwritten below
+        # topology = molecule.to_topology().to_openmm()
 
         # Handle a complex, passed as a pdb file
         if file.endswith(".pdb"):
@@ -245,9 +249,10 @@ class MixedSystem:
             self.modeller = Modeller(input_file.topology, input_file.positions)
             print(f"Initialized topology with {len(input_file.positions)} positions")
 
-        # Handle a ligand, passed as an sdf, override the Molecule initialized from smiles
-        elif file.endswith(".sdf"):
-            molecule = Molecule.from_file(file)
+        # Handle a small molecule/small periodic system, passed as an sdf or xyz
+        elif file.endswith(".sdf") or file.endswith(".xyz"):
+            # this is unnecessary, we have run exactly the same thing above
+            # molecule = Molecule.from_file(file)
             input_file = molecule
             topology = molecule.to_topology().to_openmm()
             # Hold positions in nanometers
@@ -394,7 +399,7 @@ class MixedSystem:
             PDBReporter(
                 file=os.path.join(self.output_dir, output_file),
                 reportInterval=interval,
-                enforcePeriodicBox=True,
+                enforcePeriodicBox=False,
             )
         )
         # write to dcd file for proper analysis
