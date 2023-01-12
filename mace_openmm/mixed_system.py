@@ -5,7 +5,7 @@ import time
 import numpy as np
 import sys
 from ase import Atoms
-from rdkit.Chem.rdmolfiles import MolFromPDBFile, MolFromXYZFile
+from rdkit.Chem.rdmolfiles import MolFromPDBFile, MolFromXYZFile, MolFromXYZBlock
 from openmm.openmm import System
 from typing import List, Tuple, Optional, Union, Type
 from openmm import LangevinMiddleIntegrator, Vec3, MonteCarloBarostat
@@ -511,8 +511,9 @@ class MACESystem:
     output_dir: str
     neighbour_list: str
     openmm_precision: str
-    SM_FF: str
+    # SM_FF: str
     modeller: Modeller
+    mace_system: System
 
     def __init__(
         self,
@@ -526,7 +527,7 @@ class MACESystem:
         neighbour_list: str = "torch_nl_n2",
         friction_coeff: float = 1.0,
         timestep: float = 1.0,
-        smff: str = "1.0",
+        # smff: str = "1.0",
     ) -> None:
 
         self.potential = potential
@@ -539,18 +540,60 @@ class MACESystem:
         self.openmm_precision = "Double" if dtype == torch.float64 else "Mixed"
         logger.debug(f"OpenMM will use {self.openmm_precision} precision")
 
-        if smff == "1.0":
-            self.SM_FF = "openff_unconstrained-1.0.0.offxml"
-            logger.info("Using openff-1.0 unconstrained forcefield")
-        elif smff == "2.0":
-            self.SM_FF = "openff_unconstrained-2.0.0.offxml"
-            logger.info("Using openff-2.0 unconstrained forcefield")
-        else:
-            raise ValueError(f"Small molecule forcefield {smff} not recognised")
+        # if smff == "1.0":
+        #     self.SM_FF = "openff_unconstrained-1.0.0.offxml"
+        #     logger.info("Using openff-1.0 unconstrained forcefield")
+        # elif smff == "2.0":
+        #     self.SM_FF = "openff_unconstrained-2.0.0.offxml"
+        #     logger.info("Using openff-2.0 unconstrained forcefield")
+        # else:
+        #     raise ValueError(f"Small molecule forcefield {smff} not recognised")
 
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.create_system(file=file, model_path=model_path, pressure=pressure)
+
+    def initialize_ase_atoms(self, ml_mol: str) -> Tuple[Atoms, Molecule]:
+        """Generate the ase atoms object from the
+
+        :param str ml_mol: file path or smiles
+        :return Tuple[Atoms, Molecule]: ase Atoms object and initialised openFF molecule
+        """
+        # ml_mol can be a path to a file, or a smiles string
+        if os.path.isfile(ml_mol):
+            if ml_mol.endswith(".pdb"):
+                # openFF refuses to work with pdb or xyz files, rely on rdkit to do the convertion to a mol first
+                molecule = MolFromPDBFile(ml_mol)
+                molecule = Molecule.from_rdkit(molecule)
+            elif ml_mol.endswith(".xyz"):
+                at = read(ml_mol)
+                xyz_str = "{}\n\n".format(len(at))
+                symbs = at.get_chemical_symbols()
+                pos = at.get_positions()
+                for i in range(len(at)):
+                    xyz_str += "{} {} {} {}\n".format(symbs[i], pos[i][0], pos[i][1], pos[i][2])
+                molecule = MolFromXYZBlock(xyz_str)
+                #molecule = MolFromXYZFile(ml_mol)
+                molecule = Molecule.from_rdkit(molecule, hydrogens_are_explicit=True)
+            else:
+                # assume openFF will handle the format otherwise
+                molecule = Molecule.from_file(ml_mol, allow_undefined_stereo=True)
+        else:
+            try:
+                molecule = Molecule.from_smiles(ml_mol)
+            except:
+                raise ValueError(
+                    f"Attempted to interpret arg {ml_mol} as a SMILES string, but could not parse"
+                )
+
+        if not ml_mol.endswith(".xyz"):
+            _, tmpfile = mkstemp(suffix=".xyz")
+            molecule._to_xyz_file(tmpfile)
+            atoms = read(tmpfile)
+            os.remove(tmpfile)
+        else:
+            atoms = read(ml_mol)
+        return atoms, molecule
 
     def create_system(
         self,
@@ -565,53 +608,23 @@ class MACESystem:
         :return Tuple[System, Modeller]: return mixed system and the modeller for topology + position access by downstream methods
         """
         # initialize the ase atoms for MACE
-        atoms = read(file)
+        atoms, molecule = self.initialize_ase_atoms(file)
+
+        topology = molecule.to_topology().to_openmm()
+        positions = get_xyz_from_mol(molecule.to_rdkit()) / 10
+        print(f"Initialized topology with {positions.shape} positions")
+        self.modeller = Modeller(topology, positions)
+
         if file.endswith(".xyz"):
-            pos = atoms.get_positions() / 10
             box_vectors = atoms.get_cell() / 10
-            elements = atoms.get_chemical_symbols()
-
-            # Create a topology object
-            topology = Topology()
-
-            # Add atoms to the topology
-            chain = topology.addChain()
-            res = topology.addResidue("mace_system", chain)
-            for i, (element, position) in enumerate(zip(elements, pos)):
-                e = Element.getBySymbol(element)
-                topology.addAtom(str(i), e, res)
-            # if there is a periodic box specified add it to the Topology
             if max(atoms.get_cell().cellpar()[:3]) > 0:
-                topology.setPeriodicBoxVectors(vectors=box_vectors)
-
-            print(f"Initialized topology with {pos.shape} positions")
-
-            self.modeller = Modeller(topology, pos)
-        # Handle a system, passed as a pdb file
-        # if file.endswith(".pdb"):
-        #     input_file = PDBFile(file)
-        #     topology = input_file.getTopology()
-
-        #     # if pure_ml_system specified, we just need to parse the input file
-        #     # if not pure_ml_system:
-        #     self.modeller = Modeller(input_file.topology, input_file.positions)
-        #     print(f"Initialized topology with {len(input_file.positions)} positions")
-
-        elif file.endswith(".sdf"):
-            molecule = Molecule.from_file(file)
-            # input_file = molecule
-            topology = molecule.to_topology().to_openmm()
-            # Hold positions in nanometers
-            positions = get_xyz_from_mol(molecule.to_rdkit()) / 10
-
-            print(f"Initialized topology with {positions.shape} positions")
-
-            self.modeller = Modeller(topology, positions)
-        else:
-            raise NotImplementedError
+                    topology.setPeriodicBoxVectors(vectors=box_vectors)
+        else: 
+            print("Periodic boundary conditions for pure MACE MD only supported for xyz input files")
+            print("Not sure whether periodic boxes are parsed form sdf or pdb input")
 
         ml_potential = MLPotential("mace")
-        self.mixed_system = ml_potential.createSystem(
+        self.mace_system = ml_potential.createSystem(
             topology, atoms_obj=atoms, filename=model_path, dtype=self.dtype
         )
 
@@ -619,7 +632,7 @@ class MACESystem:
             print(f"Pressure will be maintained at {pressure} bar with MC barostat")
             barostat = MonteCarloBarostat(pressure * bar, self.temperature * kelvin)
             # barostat.setFrequency(25)  25 timestep is the default
-            self.mixed_system.addForce(barostat)
+            self.mace_system.addForce(barostat)
 
     def run_md(self, steps: int, interval: int, output_file: str) -> float:
         """Runs Langevin MD with MACE, writes a pdb trajectory
@@ -633,7 +646,7 @@ class MACESystem:
 
         simulation = Simulation(
             self.modeller.topology,
-            self.mixed_system,
+            self.mace_system,
             integrator,
             platformProperties={"Precision": self.openmm_precision},
         )
