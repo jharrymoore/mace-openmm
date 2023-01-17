@@ -144,14 +144,21 @@ class MixedSystem:
             raise ValueError(f"Small molecule forcefield {smff} not recognised")
 
         os.makedirs(self.output_dir, exist_ok=True)
-
-        self.create_mixed_system(
-            file=file,
-            ml_mol=ml_mol,
-            model_path=model_path,
-            system_type=system_type,
-            pressure=pressure,
-        )
+        if system_type == "pure":
+            print("Creating pure system")
+            self.create_pure_system(
+                file=file,
+                model_path=model_path,
+                pressure=pressure,
+            )
+        else:
+            self.create_mixed_system(
+                file=file,
+                ml_mol=ml_mol,
+                model_path=model_path,
+                system_type=system_type,
+                pressure=pressure,
+            )
 
     def initialize_mm_forcefield(
         self, molecule: Optional[Molecule] = None
@@ -195,7 +202,9 @@ class MixedSystem:
             if ml_mol.endswith(".pdb"):
                 # openFF refuses to work with pdb or xyz files, rely on rdkit to do the convertion to a mol first
                 molecule = MolFromPDBFile(ml_mol)
-                logger.warn("Initializing topology from pdb - this can lead to valence errors, check your starting structure carefully!")
+                logger.warn(
+                    "Initializing topology from pdb - this can lead to valence errors, check your starting structure carefully!"
+                )
                 molecule = Molecule.from_rdkit(molecule, hydrogens_are_explicit=True)
             elif ml_mol.endswith(".xyz"):
                 molecule = MolFromXYZFile(ml_mol)
@@ -217,6 +226,71 @@ class MixedSystem:
         atoms = read(tmpfile)
         # os.remove(tmpfile)
         return atoms, molecule
+
+    def create_pure_system(
+        self,
+        file: str,
+        model_path: str,
+        pressure: Union[float, Type[None]],
+    ) -> None:
+        """Creates the mixed system from a purely mm system
+
+        :param str file: input pdb file
+        :param str model_path: path to the mace model
+        :return Tuple[System, Modeller]: return mixed system and the modeller for topology + position access by downstream methods
+        """
+        # initialize the ase atoms for MACE
+        atoms = read(file)
+        if file.endswith(".xyz"):
+            pos = atoms.get_positions() / 10
+            box_vectors = atoms.get_cell() / 10
+            elements = atoms.get_chemical_symbols()
+
+            # Create a topology object
+            topology = Topology()
+
+            # Add atoms to the topology
+            chain = topology.addChain()
+            res = topology.addResidue("mace_system", chain)
+            for i, (element, position) in enumerate(zip(elements, pos)):
+                e = Element.getBySymbol(element)
+                topology.addAtom(str(i), e, res)
+            # if there is a periodic box specified add it to the Topology
+            if max(atoms.get_cell().cellpar()[:3]) > 0:
+                print("Adding periodic box to topology ...")
+                topology.setPeriodicBoxVectors(vectors=box_vectors)
+
+            print(f"Initialized topology with {pos.shape} positions")
+
+            self.modeller = Modeller(topology, pos)
+
+        elif file.endswith(".sdf"):
+            molecule = Molecule.from_file(file)
+            # input_file = molecule
+            topology = molecule.to_topology().to_openmm()
+            # Hold positions in nanometers
+            positions = get_xyz_from_mol(molecule.to_rdkit()) / 10
+
+            print(f"Initialized topology with {positions.shape} positions")
+
+            self.modeller = Modeller(topology, positions)
+        else:
+            raise NotImplementedError
+
+        ml_potential = MLPotential("mace")
+        self.mixed_system = ml_potential.createSystem(
+            topology,
+            atoms_obj=atoms,
+            filename=model_path,
+            dtype=self.dtype,
+            nl=self.neighbour_list,
+        )
+
+        if pressure is not None:
+            print(f"Pressure will be maintained at {pressure} bar with MC barostat")
+            barostat = MonteCarloBarostat(pressure * bar, self.temperature * kelvin)
+            # barostat.setFrequency(25)  25 timestep is the default
+            self.mixed_system.addForce(barostat)
 
     def create_mixed_system(
         self,
@@ -263,6 +337,7 @@ class MixedSystem:
             self.modeller = Modeller(topology, positions)
 
         if system_type == "pure":
+            print("boxvecs", self.boxvecs)
             # we have the input_file, create the system directly from the mace potential
             # TODO: add a function to compute periodic box vectors to enforce a minimum padding distance to each box wall
             atoms.set_cell(np.array(self.boxvecs) * 10)  # set in angstroms
@@ -403,7 +478,11 @@ class MixedSystem:
             )
         )
         # write to dcd file for proper analysis
-        hdf5_reporter = HDF5Reporter(file=os.path.join(self.output_dir,output_file[:-4] + ".h5"), reportInterval=interval, velocities=True)
+        hdf5_reporter = HDF5Reporter(
+            file=os.path.join(self.output_dir, output_file[:-4] + ".h5"),
+            reportInterval=interval,
+            velocities=True,
+        )
         simulation.reporters.append(hdf5_reporter)
 
         simulation.step(steps)
