@@ -1,3 +1,6 @@
+### NOTE: this code has been merged into https://github.com/jharrymoore/openmmtools.  Please look there for up-to-date install instructions and examples
+
+
 ### MACE-openmm 
 
 Code to provide interop functionality between [openmm](https://github.com/openmm/openmm) and the [MACE](https://github.com/ACEsuit/mace).
